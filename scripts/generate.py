@@ -88,6 +88,9 @@ class Type:
     argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
     restype: typing.Optional["Type"] = None
 
+    # TypeKind.array
+    size: int = -1
+
 
 @dataclasses.dataclass
 class Function:
@@ -123,8 +126,10 @@ class Datatype:
 @dataclasses.dataclass
 class Struct:
     doc_url: str
+    source_code: str
     name: str
-    pass
+    argnames: typing.List[str] = dataclasses.field(default_factory=list)
+    argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
@@ -151,6 +156,13 @@ class Macro:
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
+    @classmethod
+    def get_value(cls, name: str) -> int:
+        m = {
+            "SDL_MESSAGEBOX_COLOR_COUNT": 5,
+        }
+        return m[name]
+
 
 @dataclasses.dataclass
 class Header:
@@ -165,6 +177,7 @@ class Header:
 
 
 async def html_from_url(url: str) -> str:
+    print(url)
     digest = hashlib.sha1(url.encode(utf8)).hexdigest()
     cache_file = cache_dir / digest
     if cache_file.exists():
@@ -191,7 +204,7 @@ def comment(text: str, idx: int) -> int:
     # multi line comment
     if text[idx + 1] == "*":
         idx += 2
-        while text[idx : idx + 2] != "*/":
+        while text[idx: idx + 2] != "*/":
             idx += 1
         idx += 2  # skip */
     return idx
@@ -218,13 +231,20 @@ def tokenize(text: str) -> typing.List[str]:
             result.append(text[start:idx])
             continue
 
-        #  comment
-        if text[idx] == "/" and text[idx + 1] in "*/":
-            idx = comment(text, idx)
+        # integer
+        if text[idx].isdigit():
+            while text[idx].isdigit():
+                idx += 1
             result.append(text[start:idx])
             continue
 
-        if text[idx : idx + 3] == "...":
+        #  comment
+        if text[idx] == "/" and text[idx + 1] in "*/":
+            idx = comment(text, idx)
+            # result.append(text[start:idx])
+            continue
+
+        if text[idx: idx + 3] == "...":
             idx += 3
             result.append(text[start:idx])
             continue
@@ -243,6 +263,10 @@ def tokenize(text: str) -> typing.List[str]:
 
 def pointer_to(base: Type) -> Type:
     return Type(TypeKind.pointer, "*", base)
+
+
+def array_to(base: Type, size: int) -> Type:
+    return Type(TypeKind.array, "[]", base, size=size)
 
 
 def get_type(tokens: typing.List[str]) -> Type:
@@ -264,6 +288,18 @@ def get_type_and_name(tokens: typing.List[str]) -> typing.Tuple[Type, str]:
     name = tokens[-1]
     if name == "...":
         return Type(TypeKind.varargs, name), name
+    if name == "]":
+        assert tokens.count("[") == 1, "invalid array"
+        lbracket_idx = tokens.index("[")
+        name = tokens[lbracket_idx - 1]
+        base = get_type(tokens[:lbracket_idx - 1])
+        size = -1
+        if tokens[lbracket_idx + 1] != "]":
+            if tokens[lbracket_idx + 1].isdigit():
+                size = int(tokens[lbracket_idx + 1])
+            else:
+                size = Macro.get_value(tokens[lbracket_idx + 1])
+        return array_to(base, size), name
     return get_type(tokens[:-1]), name
 
 
@@ -284,13 +320,14 @@ def split_by_value(lst: typing.List[str], value: str) -> typing.List[typing.List
 
 
 def get_arguments(
-    tokens: typing.List[str],
+        tokens: typing.List[str],
+        seperator: str = ",",
 ) -> typing.Tuple[typing.List[Type], typing.List[str]]:
     if not tokens or tokens == ["void"]:
         return [], []
     argnames = []
     argtypes = []
-    parts = split_by_value(tokens, ",")
+    parts = split_by_value(tokens, seperator)
     for part in parts:
         ty, name = get_type_and_name(part)
         argnames.append(name)
@@ -314,7 +351,7 @@ def run_c_code(code: str) -> str:
     env = os.environ.copy()
     if platform.system() == "Windows":
         ucrt64_bin = r"C:\msys64\ucrt64\bin"
-        env["PATH"] = f"{ucrt64_bin};{env['PATH']}"  # 添加 MinGW 到 PATH
+        env["PATH"] = f"{ucrt64_bin};{env['PATH']}"  # 添加 ucrt64 到 PATH
         env["MSYSTEM"] = "UCRT64"  # 设置 MSYS2 子系统
     try:
         subprocess.check_call([cc, "-o", "hello", filename], env=env)
@@ -411,7 +448,7 @@ async def parse_function(url: str) -> Function:
     function = Function(url, code, name)
     function.restype = restype
 
-    argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
+    argtypes, argnames = get_arguments(tokens[lparen_idx + 1: rparen_idx])
     function.argtypes = argtypes
     function.argnames = argnames
     return function
@@ -435,7 +472,7 @@ async def parse_datatype(url: str) -> Datatype:
         name = tokens[rparen_idx - 1]
         lparen_idx = tokens.index("(", rparen_idx + 1)
         rparen_idx = tokens.index(")", rparen_idx + 1)
-        argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
+        argtypes, argnames = get_arguments(tokens[lparen_idx + 1: rparen_idx])
         ty = Type(TypeKind.function, name, None, argnames, argtypes, restype)
     else:
         ty, name = get_type_and_name(tokens[1:-1])
@@ -446,6 +483,32 @@ async def parse_datatype(url: str) -> Datatype:
     )
     datatype.macros = get_macros(macro_code)
     return datatype
+
+
+async def parse_struct(url: str) -> Struct:
+    html = await html_from_url(url)
+
+    soup = bs4.BeautifulSoup(html, "html.parser")
+    tag_code = soup.select_one(".sourceCode")
+    code = tag_code.text.strip()
+
+    tokens = tokenize(code)
+    if tokens[0] == "typedef" and (tokens[1] == "struct" or tokens[1] == "union"):
+        # typedef struct/union xxx { ... } xxx;
+        name = tokens[-2]
+    elif tokens[0] == "struct":
+        # struct xxx { ... };
+        name = tokens[1]
+    else:
+        raise ValueError(f"invalid struct: {code}")
+    lbrace_idx = tokens.index("{")
+    rbrace_idx = tokens.index("}")
+    argtypes, argnames = get_arguments(tokens[lbrace_idx + 1: rbrace_idx], ";")
+
+    struct = Struct(url, code, name)
+    struct.argtypes = argtypes
+    struct.argnames = argnames
+    return struct
 
 
 async def parse_header(url: str) -> Header:
@@ -467,12 +530,12 @@ async def parse_header(url: str) -> Header:
         datatype = await parse_datatype(def_url)
         header.datatypes.append(datatype)
 
-    print("Structs:")
     structs_section = soup.select_one("#structs + ul")
     for tag_a in structs_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
-        name = tag_a.text.strip()
-        print("    ", name, def_url)
+        # name = tag_a.text.strip()
+        struct = await parse_struct(def_url)
+        header.structs.append(struct)
 
     # print("Enums:")
     enums_section = soup.select_one("#enums + ul")
