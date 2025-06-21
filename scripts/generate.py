@@ -3,7 +3,12 @@ import enum
 import dataclasses
 import hashlib
 import json
+import os
 import pathlib
+import platform
+import shutil
+import subprocess
+import time
 import typing
 import urllib.parse
 
@@ -13,6 +18,7 @@ import aiohttp
 script_dir = pathlib.Path(__file__).parent.resolve()
 cache_dir = script_dir / ".cache"
 utf8 = "utf8"
+
 
 class TypeKind(enum.IntEnum):
     void = enum.auto()
@@ -99,7 +105,7 @@ class Function:
 @dataclasses.dataclass
 class Item:
     key: str
-    value: str
+    value: int
 
 
 @dataclasses.dataclass
@@ -292,10 +298,103 @@ def get_arguments(
     return argtypes, argnames
 
 
-def get_macro(text: str) -> typing.Tuple[str, str]:
-    parts = text.split()
-    assert parts[0] == "#define" and len(parts) >= 3, f"invalid marco definition \"{text}\""
-    return parts[1], parts[2]
+def run_c_code(code: str) -> str:
+    """运行 C 代码返回输出"""
+    if platform.system() == "Windows":
+        cc = r"C:\msys64\ucrt64\bin\gcc.exe"
+        if not os.path.exists(cc):
+            msg = f"Can't find '{cc}'. Please install MSYS2"
+            raise ValueError(msg)
+    else:
+        cc = shutil.which("cc")
+    filename = f"hello_{int(time.time())}.c"
+    with open(filename, "w", encoding=utf8) as f:
+        f.write(code)
+
+    env = os.environ.copy()
+    if platform.system() == "Windows":
+        ucrt64_bin = r"C:\msys64\ucrt64\bin"
+        env["PATH"] = f"{ucrt64_bin};{env['PATH']}"  # 添加 MinGW 到 PATH
+        env["MSYSTEM"] = "UCRT64"  # 设置 MSYS2 子系统
+    try:
+        subprocess.check_call([cc, "-o", "hello", filename], env=env)
+        return subprocess.check_output(["./hello"], env=env, text=True)
+    finally:
+        os.unlink(filename)
+
+
+def get_macros(text: str) -> typing.List[Item]:
+    if not text.strip():
+        return []
+    print_stmts = []
+    for line in text.splitlines():
+        name = line.split()[1]
+        if "(" in name:
+            # 跳过函数宏
+            continue
+        stmt = r'printf("{}=%lld\n", {});'.format(name, name)
+        print_stmts.append(stmt)
+    body = "\n".join(print_stmts)
+    code = f"""
+#include <stdio.h>
+#include <stdint.h>
+
+#define SDL_UINT64_C(c)  c ## ULL /* or whatever the current compiler uses. */
+#define SDL_SINT64_C(c)  c ## LL  /* or whatever the current compiler uses. */
+
+typedef uint8_t Uint8;
+#define SDL_MAX_UINT8   ((Uint8)0xFF)           /* 255 */
+#define SDL_MIN_UINT8   ((Uint8)0x00)           /* 0 */
+typedef int8_t Sint8;
+#define SDL_MAX_SINT8   ((Sint8)0x7F)           /* 127 */
+#define SDL_MIN_SINT8   ((Sint8)(~0x7F))        /* -128 */
+typedef int16_t Sint16;
+#define SDL_MAX_SINT16  ((Sint16)0x7FFF)        /* 32767 */
+#define SDL_MIN_SINT16  ((Sint16)(~0x7FFF))     /* -32768 */
+typedef uint16_t Uint16;
+#define SDL_MAX_UINT16  ((Uint16)0xFFFF)        /* 65535 */
+#define SDL_MIN_UINT16  ((Uint16)0x0000)        /* 0 */
+typedef uint32_t Uint32;
+#define SDL_MAX_UINT32  ((Uint32)0xFFFFFFFFu)   /* 4294967295 */
+#define SDL_MIN_UINT32  ((Uint32)0x00000000)    /* 0 */
+typedef int32_t Sint32;
+#define SDL_MAX_SINT32  ((Sint32)0x7FFFFFFF)    /* 2147483647 */
+#define SDL_MIN_SINT32  ((Sint32)(~0x7FFFFFFF)) /* -2147483648 */
+typedef int64_t Sint64;
+#define SDL_MAX_SINT64  SDL_SINT64_C(0x7FFFFFFFFFFFFFFF)   /* 9223372036854775807 */
+#define SDL_MIN_SINT64  ~SDL_SINT64_C(0x7FFFFFFFFFFFFFFF)  /* -9223372036854775808 */
+typedef uint64_t Uint64;
+#define SDL_MAX_UINT64  SDL_UINT64_C(0xFFFFFFFFFFFFFFFF)   /* 18446744073709551615 */
+#define SDL_MIN_UINT64  SDL_UINT64_C(0x0000000000000000)   /* 0 */
+
+
+{text}
+
+int main() {{
+
+{body}
+
+    return 0;
+}}
+"""
+    specials = {
+        "SDL_MAX_SINT64": 9223372036854775807,
+        "SDL_MIN_SINT64": -9223372036854775808,
+        "SDL_MAX_UINT64": 18446744073709551615,
+        "SDL_MIN_UINT64": 0,
+    }
+    output = run_c_code(code)
+    result = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        k, v = line.split("=", 1)
+        item = Item(k, int(v))
+        if k in specials:
+            item.value = specials[k]
+        result.append(item)
+    return result
 
 
 async def parse_function(url: str) -> Function:
@@ -312,7 +411,7 @@ async def parse_function(url: str) -> Function:
     function = Function(url, code, name)
     function.restype = restype
 
-    argtypes, argnames = get_arguments(tokens[lparen_idx+1:rparen_idx])
+    argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
     function.argtypes = argtypes
     function.argnames = argnames
     return function
@@ -336,17 +435,16 @@ async def parse_datatype(url: str) -> Datatype:
         name = tokens[rparen_idx - 1]
         lparen_idx = tokens.index("(", rparen_idx + 1)
         rparen_idx = tokens.index(")", rparen_idx + 1)
-        argtypes, argnames = get_arguments(tokens[lparen_idx + 1:rparen_idx])
+        argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
         ty = Type(TypeKind.function, name, None, argnames, argtypes, restype)
     else:
         ty, name = get_type_and_name(tokens[1:-1])
     datatype = Datatype(url, code, name, ty)
 
-    for part in parts[1:]:
-        key, value = get_macro(part)
-        item = Item(key, value)
-        datatype.macros.append(item)
-
+    macro_code = "\n".join(
+        part for part in parts[1:] if part and (not part.startswith("#endif"))
+    )
+    datatype.macros = get_macros(macro_code)
     return datatype
 
 
@@ -355,25 +453,19 @@ async def parse_header(url: str) -> Header:
     html = await html_from_url(url)
     soup = bs4.BeautifulSoup(html, "html.parser")
 
-    print("Functions:")
     functions_section = soup.select_one("#functions + ul")
     for tag_a in functions_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
-        name = tag_a.text.strip()
-        try:
-            function = await parse_function(def_url)
-        except:
-            print("error in parse_function", def_url, hashlib.sha1(def_url.encode(utf8)).hexdigest())
-            raise
-        print(function)
+        # name = tag_a.text.strip()
+        function = await parse_function(def_url)
         header.functions.append(function)
 
-    print("Datatypes:")
     datatypes_section = soup.select_one("#datatypes + ul")
     for tag_a in datatypes_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
-        name = tag_a.text.strip()
-        print("    ", name, def_url)
+        # name = tag_a.text.strip()
+        datatype = await parse_datatype(def_url)
+        header.datatypes.append(datatype)
 
     print("Structs:")
     structs_section = soup.select_one("#structs + ul")
@@ -382,19 +474,19 @@ async def parse_header(url: str) -> Header:
         name = tag_a.text.strip()
         print("    ", name, def_url)
 
-    print("Enums:")
+    # print("Enums:")
     enums_section = soup.select_one("#enums + ul")
     for tag_a in enums_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
         name = tag_a.text.strip()
-        print("    ", name, def_url)
+        # print("    ", name, def_url)
 
-    print("Macros:")
+    # print("Macros:")
     macros_section = soup.select_one("#macros + ul")
     for tag_a in macros_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
         name = tag_a.text.strip()
-        print("    ", name, def_url)
+        # print("    ", name, def_url)
     return header
 
 
