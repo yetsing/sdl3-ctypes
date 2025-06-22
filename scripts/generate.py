@@ -7,6 +7,7 @@ import os
 import pathlib
 import platform
 import shutil
+import string
 import subprocess
 import time
 import typing
@@ -18,6 +19,9 @@ import aiohttp
 script_dir = pathlib.Path(__file__).parent.resolve()
 cache_dir = script_dir / ".cache"
 utf8 = "utf8"
+
+
+# region Dataclass definition
 
 
 class TypeKind(enum.IntEnum):
@@ -100,6 +104,7 @@ class Function:
     argnames: typing.List[str] = dataclasses.field(default_factory=list)
     argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
     restype: typing.Optional["Type"] = None
+    header: str = ""
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
@@ -118,6 +123,7 @@ class Datatype:
     name: str
     type: Type
     macros: typing.List["Item"] = dataclasses.field(default_factory=list)
+    header: str = ""
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
@@ -130,9 +136,16 @@ class Struct:
     name: str
     argnames: typing.List[str] = dataclasses.field(default_factory=list)
     argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
+    header: str = ""
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
+
+
+@dataclasses.dataclass
+class EnumItem:
+    key: str
+    value: typing.Union[int, str]
 
 
 @dataclasses.dataclass
@@ -140,7 +153,7 @@ class Enumc:
     doc_url: str
     source_code: str
     name: str
-    pass
+    items: typing.List["EnumItem"] = dataclasses.field(default_factory=list)
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
@@ -151,13 +164,14 @@ class Macro:
     doc_url: str
     source_code: str
     name: str
-    pass
+    value: typing.Union[int, str]
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
     @classmethod
     def get_value(cls, name: str) -> int:
+        """获取一些宏的值"""
         m = {
             "SDL_MESSAGEBOX_COLOR_COUNT": 5,
         }
@@ -174,6 +188,15 @@ class Header:
     structs: typing.List[Struct] = dataclasses.field(default_factory=list)
     enums: typing.List[Enumc] = dataclasses.field(default_factory=list)
     macros: typing.List[Macro] = dataclasses.field(default_factory=list)
+
+    def to_py(self) -> str:
+        return ""
+
+
+# endregion
+
+
+# region Parse util
 
 
 async def html_from_url(url: str) -> str:
@@ -204,7 +227,7 @@ def comment(text: str, idx: int) -> int:
     # multi line comment
     if text[idx + 1] == "*":
         idx += 2
-        while text[idx: idx + 2] != "*/":
+        while text[idx : idx + 2] != "*/":
             idx += 1
         idx += 2  # skip */
     return idx
@@ -224,6 +247,15 @@ def tokenize(text: str) -> typing.List[str]:
 
         start = idx
 
+        # string
+        if text[idx] == '"':
+            idx += 1
+            while text[idx] != '"':
+                idx += 1
+            idx += 1
+            result.append(text[start:idx])
+            continue
+
         # identifier
         if text[idx].isalpha() or text[idx] == "_":
             while text[idx].isalnum() or text[idx] == "_":
@@ -231,9 +263,20 @@ def tokenize(text: str) -> typing.List[str]:
             result.append(text[start:idx])
             continue
 
+        # prefix: 0x 0X suffix: u lu U LU etc...
+        special_digits = "xXluLu" + string.hexdigits
+
+        # negative integer
+        if text[idx] == "-" and text[idx + 1].isdigit():
+            idx += 2
+            while text[idx].isdigit() or text[idx] in special_digits:
+                idx += 1
+            result.append(text[start:idx])
+            continue
+
         # integer
         if text[idx].isdigit():
-            while text[idx].isdigit():
+            while text[idx].isdigit() or text[idx] in special_digits:
                 idx += 1
             result.append(text[start:idx])
             continue
@@ -244,12 +287,12 @@ def tokenize(text: str) -> typing.List[str]:
             # result.append(text[start:idx])
             continue
 
-        if text[idx: idx + 3] == "...":
+        if text[idx : idx + 3] == "...":
             idx += 3
             result.append(text[start:idx])
             continue
 
-        # * , ( ) [ ] ; etc...
+        # * , ( ) [ ] ; # etc...
         if text[idx].isprintable():
             result.append(text[idx])
             idx += 1
@@ -292,7 +335,7 @@ def get_type_and_name(tokens: typing.List[str]) -> typing.Tuple[Type, str]:
         assert tokens.count("[") == 1, "invalid array"
         lbracket_idx = tokens.index("[")
         name = tokens[lbracket_idx - 1]
-        base = get_type(tokens[:lbracket_idx - 1])
+        base = get_type(tokens[: lbracket_idx - 1])
         size = -1
         if tokens[lbracket_idx + 1] != "]":
             if tokens[lbracket_idx + 1].isdigit():
@@ -320,8 +363,8 @@ def split_by_value(lst: typing.List[str], value: str) -> typing.List[typing.List
 
 
 def get_arguments(
-        tokens: typing.List[str],
-        seperator: str = ",",
+    tokens: typing.List[str],
+    seperator: str = ",",
 ) -> typing.Tuple[typing.List[Type], typing.List[str]]:
     if not tokens or tokens == ["void"]:
         return [], []
@@ -434,6 +477,30 @@ int main() {{
     return result
 
 
+def strip_macro(code: str) -> str:
+    """去除代码里面的宏"""
+    result = []
+    for line in code.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        result.append(line)
+    return "\n".join(result)
+
+
+async def get_source_code(url: str) -> str:
+    html = await html_from_url(url)
+
+    soup = bs4.BeautifulSoup(html, "html.parser")
+    tag_code = soup.select_one(".sourceCode")
+    return tag_code.text.strip()
+
+
+# endregion
+
+
+# region Parse function
+
+
 async def parse_function(url: str) -> Function:
     html = await html_from_url(url)
 
@@ -448,7 +515,7 @@ async def parse_function(url: str) -> Function:
     function = Function(url, code, name)
     function.restype = restype
 
-    argtypes, argnames = get_arguments(tokens[lparen_idx + 1: rparen_idx])
+    argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
     function.argtypes = argtypes
     function.argnames = argnames
     return function
@@ -472,7 +539,7 @@ async def parse_datatype(url: str) -> Datatype:
         name = tokens[rparen_idx - 1]
         lparen_idx = tokens.index("(", rparen_idx + 1)
         rparen_idx = tokens.index(")", rparen_idx + 1)
-        argtypes, argnames = get_arguments(tokens[lparen_idx + 1: rparen_idx])
+        argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
         ty = Type(TypeKind.function, name, None, argnames, argtypes, restype)
     else:
         ty, name = get_type_and_name(tokens[1:-1])
@@ -503,12 +570,88 @@ async def parse_struct(url: str) -> Struct:
         raise ValueError(f"invalid struct: {code}")
     lbrace_idx = tokens.index("{")
     rbrace_idx = tokens.index("}")
-    argtypes, argnames = get_arguments(tokens[lbrace_idx + 1: rbrace_idx], ";")
+    argtypes, argnames = get_arguments(tokens[lbrace_idx + 1 : rbrace_idx], ";")
 
     struct = Struct(url, code, name)
     struct.argtypes = argtypes
     struct.argnames = argnames
     return struct
+
+
+async def parse_enum(url: str) -> Enumc:
+    html = await html_from_url(url)
+
+    soup = bs4.BeautifulSoup(html, "html.parser")
+    tag_code = soup.select_one(".sourceCode")
+    code = tag_code.text.strip()
+
+    # typedef enum xxx { ... } xxx;
+    tokens = tokenize(code)
+    assert tokens[0] == "typedef" and tokens[1] == "enum", f"invalid enum: {code}"
+    name = tokens[-2]
+    enumc = Enumc(url, code, name)
+    if name in ("SDL_PixelFormat", "SDL_AudioFormat"):
+        # SDL_PixelFormat SDL_AudioFormat
+        # 存在 #if 宏，根据平台会有不同的值
+        # 所以不解析，后面手动生成这个枚举
+        return enumc
+
+    lbrace_idx = tokens.index("{")
+    rbrace_idx = tokens.index("}")
+    # parse define enum values
+    value_tokens = tokens[lbrace_idx + 1 : rbrace_idx]
+    auto_value = 0
+    items = []
+    item_mapping = {}
+    for part in split_by_value(value_tokens, ","):
+        item = EnumItem("", auto_value)
+        if len(part) == 1:
+            key = part[0]
+            item.key = key
+            item.value = auto_value
+            auto_value += 1
+        elif len(part) == 3:
+            assert part[1] == "=", f"invalid enum value: {code}"
+            key = part[0]
+            item.key = key
+            value_s = part[2].rstrip("luLu")
+            try:
+                base = 10
+                if value_s.startswith("0x") or value_s.startswith("0X"):
+                    base = 16
+                auto_value = int(value_s, base)
+                item.value = auto_value
+                auto_value += 1
+            except ValueError:
+                # xxx = xxx
+                auto_value = item_mapping[part[2]]
+                item.value = part[2]  # 保留原有赋值
+        else:
+            raise ValueError(f"invalid enum value: {part}\n{code}")
+
+        item_mapping[item.key] = item.value
+        items.append(item)
+
+    enumc.items = items
+    return enumc
+
+
+async def parse_macro(url: str) -> Macro:
+    code = await get_source_code(url)
+
+    tokens = code.replace("\\\n", "").split(" ", 2)
+    assert len(tokens) == 3 and tokens[0] == "#define", f"invalid macro: {code}"
+
+    key = tokens[1].strip()
+    value = tokens[2].strip()
+    if value.isdigit() or value.startswith("0x"):
+        value = value.rstrip("luLU")
+        base = 10
+        if value.startswith("0x"):
+            base = 16
+        value = int(value, base=base)
+    macro = Macro(url, code, key, value)
+    return macro
 
 
 async def parse_header(url: str) -> Header:
@@ -521,6 +664,7 @@ async def parse_header(url: str) -> Header:
         def_url = urllib.parse.urljoin(url, tag_a["href"])
         # name = tag_a.text.strip()
         function = await parse_function(def_url)
+        function.header = header.filename
         header.functions.append(function)
 
     datatypes_section = soup.select_one("#datatypes + ul")
@@ -528,6 +672,7 @@ async def parse_header(url: str) -> Header:
         def_url = urllib.parse.urljoin(url, tag_a["href"])
         # name = tag_a.text.strip()
         datatype = await parse_datatype(def_url)
+        datatype.header = header.filename
         header.datatypes.append(datatype)
 
     structs_section = soup.select_one("#structs + ul")
@@ -535,22 +680,29 @@ async def parse_header(url: str) -> Header:
         def_url = urllib.parse.urljoin(url, tag_a["href"])
         # name = tag_a.text.strip()
         struct = await parse_struct(def_url)
+        struct.header = header.filename
         header.structs.append(struct)
 
-    # print("Enums:")
     enums_section = soup.select_one("#enums + ul")
     for tag_a in enums_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
-        name = tag_a.text.strip()
-        # print("    ", name, def_url)
+        # name = tag_a.text.strip()
+        enumc = await parse_enum(def_url)
+        enumc.header = header.filename
+        header.enums.append(enumc)
 
-    # print("Macros:")
     macros_section = soup.select_one("#macros + ul")
     for tag_a in macros_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
-        name = tag_a.text.strip()
-        # print("    ", name, def_url)
+        # name = tag_a.text.strip()
+        macro = await parse_macro(def_url)
+        macro.header = header.filename
+        header.macros.append(macro)
+
     return header
+
+
+# endregion
 
 
 async def main():
