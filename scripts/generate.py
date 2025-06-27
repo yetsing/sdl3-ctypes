@@ -1,6 +1,6 @@
 import asyncio
-import enum
 import dataclasses
+import enum
 import hashlib
 import json
 import os
@@ -13,15 +13,28 @@ import time
 import typing
 import urllib.parse
 
-import bs4
 import aiohttp
+import bs4
 
 script_dir = pathlib.Path(__file__).parent.resolve()
 cache_dir = script_dir / ".cache"
 utf8 = "utf8"
+package_name = "sdl3_ctypes"
 
 
 # region Dataclass definition
+
+Defines = typing.Dict[str, typing.Union["Datatypes", "Struct"]]
+
+cfunctype_tpl = """
+# {source_code}
+{name} = ctypes.CFUNCTYPE({restype}, {argtypes})
+"""
+pycode_tpl = r"""{document}
+
+{imports}
+{body}
+"""
 
 
 class TypeKind(enum.IntEnum):
@@ -95,6 +108,49 @@ class Type:
     # TypeKind.array
     size: int = -1
 
+    def convert(self) -> typing.Tuple[str, str]:
+        mapping = {
+            TypeKind.void: "None",
+            TypeKind.bool: "ctypes.c_bool",
+            TypeKind.char: "ctypes.c_char",
+            TypeKind.short: "ctypes.c_short",
+            TypeKind.int: "ctypes.c_int",
+            TypeKind.uint8: "ctypes.c_uint8",
+            TypeKind.uint16: "ctypes.c_uint16",
+            TypeKind.uint32: "ctypes.c_uint32",
+            TypeKind.uint64: "ctypes.c_uint64",
+            TypeKind.int8: "ctypes.c_int8",
+            TypeKind.int16: "ctypes.c_int16",
+            TypeKind.int32: "ctypes.c_int32",
+            TypeKind.int64: "ctypes.c_int64",
+            TypeKind.long: "ctypes.c_long",
+            TypeKind.float: "ctypes.c_float",
+            TypeKind.double: "ctypes.c_double",
+            TypeKind.enumc: "ctypes.c_int",
+            TypeKind.function: self.name,
+            TypeKind.ident: self.name,
+        }
+        if self.kind == TypeKind.pointer:
+            if self.base.kind == TypeKind.char:
+                return "ctypes.c_char_p", ""
+            if self.base.kind == TypeKind.void:
+                return "ctypes.c_void_p", ""
+            name = ""
+            if self.kind == TypeKind.ident:
+                name = self.name
+            return f"ctypes.POINTER({mapping[self.base.kind]})", name
+        if (
+            self.kind == TypeKind.array
+            and self.base.kind == TypeKind.pointer
+            and self.base.base.kind == TypeKind.char
+        ):
+            # char *argv[]
+            return "ctypes.POINTER(ctypes.c_char_p)", ""
+        name = ""
+        if self.kind == TypeKind.ident:
+            name = self.name
+        return mapping[self.kind], name
+
 
 @dataclasses.dataclass
 class Function:
@@ -108,6 +164,25 @@ class Function:
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
+
+    def convert_py(self, libname: str) -> typing.Tuple[str, typing.List[str]]:
+        unresolve_names = []
+        argtypes_list = []
+        for t in self.argtypes:
+            s, name = t.convert()
+            argtypes_list.append(s)
+            if name:
+                unresolve_names.append(name)
+        argtypes = ", ".join(argtypes_list)
+        restype, name = self.restype.convert()
+        assert name == "", f"return unresolve {name!r}"
+        code = f"""
+# {self.source_code}
+{self.name} = {libname}.{self.name}
+{self.name}.argtypes = [{argtypes}]
+{self.name}.restype = {restype}
+"""
+        return code, unresolve_names
 
 
 @dataclasses.dataclass
@@ -127,6 +202,27 @@ class Datatype:
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
+
+    def convert_py(self, libname: str) -> typing.Tuple[str, typing.List[str]]:
+        if self.type.kind == TypeKind.function:
+            unresolve_names = []
+            argtypes_list = []
+            for t in self.type.argtypes:
+                s, name = t.convert()
+                argtypes_list.append(s)
+                if name:
+                    unresolve_names.append(name)
+            argtypes = ", ".join(argtypes_list)
+            restype, name = self.type.restype.convert()
+            assert name == "", f"return unresolve {name!r}"
+            code = cfunctype_tpl.format(
+                source_code=self.source_code,
+                name=self.name,
+                restype=restype,
+                argtypes=argtypes,
+            )
+            return code, unresolve_names
+        raise ValueError(f"unsupported code: {self.source_code}")
 
 
 @dataclasses.dataclass
@@ -189,8 +285,65 @@ class Header:
     enums: typing.List[Enumc] = dataclasses.field(default_factory=list)
     macros: typing.List[Macro] = dataclasses.field(default_factory=list)
 
-    def to_py(self) -> str:
-        return ""
+    def convert_py(self, libname: str, defines: Defines) -> str:
+        imports = [
+            "import ctypes",
+            f"from {package_name}.lib import {libname}",
+        ]
+        codes = []
+        unresolve_names = []
+
+        for datatype in self.datatypes:
+            code, names = datatype.convert_py(libname)
+            codes.append(code)
+            unresolve_names.extend(names)
+
+        if self.filename == "SDL_main.h":
+            code, names = self.convert_func_sdl_main(libname)
+            codes.append(code)
+            unresolve_names.extend(names)
+        else:
+            for func in self.functions:
+                code, names = func.convert_py(libname)
+                codes.append(code)
+                unresolve_names.extend(names)
+
+        for name in unresolve_names:
+            define = defines[name]
+            if define.header == self.filename:
+                continue
+            module = define.header[:-2]
+            imports.append(f"from {package_name}.{module} import {name}")
+
+        document = (
+            f'"""\n{self.filename}\n{self.description}\nDocument: {self.doc_url}\n"""'
+        )
+        imports_s = "\n".join(imports)
+        code_s = "\n".join(codes)
+        return pycode_tpl.format(document=document, imports=imports_s, body=code_s)
+
+    def convert_func_sdl_main(
+        self, libname: str
+    ) -> typing.Tuple[str, typing.List[str]]:
+        """特殊处理 SDL_main.h"""
+        codes = []
+
+        ignored = {
+            "SDL_AppEvent",
+            "SDL_AppInit",
+            "SDL_AppIterate",
+            "SDL_AppQuit",
+            "SDL_main",
+        }
+        unresolve_names = []
+        for func in self.functions:
+            if func.name in ignored:
+                continue
+            code, names = func.convert_py(libname)
+            codes.append(code)
+            unresolve_names.extend(names)
+
+        return "".join(codes), unresolve_names
 
 
 # endregion
@@ -200,7 +353,6 @@ class Header:
 
 
 async def html_from_url(url: str) -> str:
-    print(url)
     digest = hashlib.sha1(url.encode(utf8)).hexdigest()
     cache_file = cache_dir / digest
     if cache_file.exists():
@@ -502,11 +654,7 @@ async def get_source_code(url: str) -> str:
 
 
 async def parse_function(url: str) -> Function:
-    html = await html_from_url(url)
-
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    tag_code = soup.select_one(".sourceCode")
-    code = tag_code.text.strip()
+    code = await get_source_code(url)
 
     tokens = tokenize(code)
     lparen_idx = tokens.index("(")
@@ -522,11 +670,7 @@ async def parse_function(url: str) -> Function:
 
 
 async def parse_datatype(url: str) -> Datatype:
-    html = await html_from_url(url)
-
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    tag_code = soup.select_one(".sourceCode")
-    code = tag_code.text.strip()
+    code = await get_source_code(url)
     parts = code.splitlines()
 
     tokens = tokenize(parts[0])
@@ -553,11 +697,7 @@ async def parse_datatype(url: str) -> Datatype:
 
 
 async def parse_struct(url: str) -> Struct:
-    html = await html_from_url(url)
-
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    tag_code = soup.select_one(".sourceCode")
-    code = tag_code.text.strip()
+    code = await get_source_code(url)
 
     tokens = tokenize(code)
     if tokens[0] == "typedef" and (tokens[1] == "struct" or tokens[1] == "union"):
@@ -579,11 +719,7 @@ async def parse_struct(url: str) -> Struct:
 
 
 async def parse_enum(url: str) -> Enumc:
-    html = await html_from_url(url)
-
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    tag_code = soup.select_one(".sourceCode")
-    code = tag_code.text.strip()
+    code = await get_source_code(url)
 
     # typedef enum xxx { ... } xxx;
     tokens = tokenize(code)
@@ -654,8 +790,8 @@ async def parse_macro(url: str) -> Macro:
     return macro
 
 
-async def parse_header(url: str) -> Header:
-    header = Header(url)
+async def parse_header(url: str, description: str, filename: str) -> Header:
+    header = Header(url, description, filename)
     html = await html_from_url(url)
     soup = bs4.BeautifulSoup(html, "html.parser")
 
@@ -705,23 +841,39 @@ async def parse_header(url: str) -> Header:
 # endregion
 
 
-async def main():
+async def parse(url: str) -> typing.List[Header]:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    doc_url = "https://wiki.libsdl.org/SDL3/APIByCategory"
-    html = await html_from_url(doc_url)
+    html = await html_from_url(url)
     soup = bs4.BeautifulSoup(html, "html.parser")
     rows = soup.select("tbody tr")
     result = []
     for row in rows:
         tds: list = row.find_all("td")
-        api_url = urllib.parse.urljoin(doc_url, tds[0].a["href"])
+        api_url = urllib.parse.urljoin(url, tds[0].a["href"])
         description = tds[0].text
         filename = tds[1].text
-        header = await parse_header(api_url)
-        header.filename = filename
-        header.description = description
+        header = await parse_header(api_url, description, filename)
         result.append(header)
-    # print(json.dumps([dataclasses.asdict(h) for h in result], indent=4))
+    return result
+
+
+async def main():
+    doc_url = "https://wiki.libsdl.org/SDL3/APIByCategory"
+    result = await parse(doc_url)
+
+    defines = {}
+    for header in result:
+        for datatype in header.datatypes:
+            defines[datatype.name] = datatype
+        for struct in header.structs:
+            defines[struct.name] = struct
+
+    libname = "libsdl3"
+    output_dir = script_dir.parent / package_name
+    for header in result:
+        output_filename = output_dir / (header.filename.replace(".h", ".py"))
+        output_filename.write_text(header.convert_py(libname, defines))
+        break
     await asyncio.sleep(1)
 
 
