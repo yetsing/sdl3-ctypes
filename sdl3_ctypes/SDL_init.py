@@ -9,6 +9,17 @@ import ctypes
 from sdl3_ctypes.lib import libsdl3
 from sdl3_ctypes.SDL_events import SDL_Event
 
+# typedef enum SDL_AppResult
+# {
+#     SDL_APP_CONTINUE,   /**< Value that requests that the app continue from the main callbacks. */
+#     SDL_APP_SUCCESS,    /**< Value that requests termination with success from the main callbacks. */
+#     SDL_APP_FAILURE     /**< Value that requests termination with error from the main callbacks. */
+# } SDL_AppResult;
+SDL_APP_CONTINUE = 0
+SDL_APP_SUCCESS = 1
+SDL_APP_FAILURE = 2
+
+
 # typedef SDL_AppResult (SDLCALL *SDL_AppEvent_func)(void *appstate, SDL_Event *event);
 SDL_AppEvent_func = ctypes.CFUNCTYPE(
     ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(SDL_Event)

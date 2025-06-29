@@ -27,7 +27,9 @@ package_name = "sdl3_ctypes"
 
 def debug_wrapper(func: typing.Callable) -> typing.Callable:
     @functools.wraps(func)
-    def wrapper(self: typing.Any, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+    def wrapper(
+        self: typing.Any, *args: typing.Any, **kwargs: typing.Any
+    ) -> typing.Any:
         try:
             return func(self, *args, **kwargs)
         except:
@@ -38,9 +40,10 @@ def debug_wrapper(func: typing.Callable) -> typing.Callable:
     return wrapper
 
 
-def comment_multline(text: str) -> str:
+def convert_comment(text: str) -> str:
     lines = text.splitlines()
     return "\n".join(f"# {line}" for line in lines if line.strip())
+
 
 # endregion
 
@@ -50,7 +53,7 @@ def comment_multline(text: str) -> str:
 Defines = typing.Dict[str, typing.Union["Datatype", "Struct", "Enumc"]]
 
 cfunctype_tpl = """
-# {source_code}
+{source_code}
 {name} = ctypes.CFUNCTYPE({restype}, {argtypes})
 """
 pycode_tpl = r"""{document}
@@ -60,7 +63,9 @@ pycode_tpl = r"""{document}
 """
 
 
-def convert_enum_and_macro(type_s: str, name: str, defines: Defines) -> typing.Tuple[str, str]:
+def convert_enum_and_macro(
+    type_s: str, name: str, defines: Defines
+) -> typing.Tuple[str, str]:
     """转换枚举和宏为对应的整数类型"""
     if not name:
         # simple type
@@ -150,8 +155,16 @@ class Type:
 
     def isint(self):
         return self.kind in {
-            TypeKind.int, TypeKind.uint8, TypeKind.uint16, TypeKind.uint32, TypeKind.uint64,
-            TypeKind.int8, TypeKind.int16, TypeKind.int32, TypeKind.int64, TypeKind.long,
+            TypeKind.int,
+            TypeKind.uint8,
+            TypeKind.uint16,
+            TypeKind.uint32,
+            TypeKind.uint64,
+            TypeKind.int8,
+            TypeKind.int16,
+            TypeKind.int32,
+            TypeKind.int64,
+            TypeKind.long,
         }
 
     def convert(self, defines: Defines) -> typing.Tuple[str, str]:
@@ -181,7 +194,10 @@ class Type:
                 return "ctypes.c_char_p", ""
             if self.base.kind == TypeKind.void:
                 return "ctypes.c_void_p", ""
-            if self.base.kind == TypeKind.pointer and self.base.base.kind == TypeKind.void:
+            if (
+                self.base.kind == TypeKind.pointer
+                and self.base.base.kind == TypeKind.void
+            ):
                 return "ctypes.POINTER(ctypes.c_void_p)", ""
             sub, name = self.base.convert(defines)
             return f"ctypes.POINTER({sub})", name
@@ -212,7 +228,9 @@ class Function:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
     @debug_wrapper
-    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
+    def convert_py(
+        self, libname: str, defines: Defines
+    ) -> typing.Tuple[str, typing.List[str]]:
         unresolve_names = []
         argtypes_list = []
         for t in self.argtypes:
@@ -224,7 +242,7 @@ class Function:
         restype, name = self.restype.convert(defines)
         assert name == "", f"invalid restype: {restype} {name}"
         code = f"""
-# {self.source_code}
+{convert_comment(self.source_code)}
 {self.name} = {libname}.{self.name}
 {self.name}.argtypes = [{argtypes}]
 {self.name}.restype = {restype}
@@ -251,7 +269,9 @@ class Datatype:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
     @debug_wrapper
-    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
+    def convert_py(
+        self, libname: str, defines: Defines
+    ) -> typing.Tuple[str, typing.List[str]]:
         if self.type.kind == TypeKind.function:
             unresolve_names = []
             argtypes_list = []
@@ -264,14 +284,14 @@ class Datatype:
             restype, name = self.type.restype.convert(defines)
             assert name == "", f"invalid restype: {restype} {name}"
             code = cfunctype_tpl.format(
-                source_code=self.source_code,
+                source_code=convert_comment(self.source_code),
                 name=self.name,
                 restype=restype,
                 argtypes=argtypes,
             )
             return code, unresolve_names
         assert self.type.isint(), f"Datatype expected int, got {self.type.kind}"
-        codes = [comment_multline(self.source_code)]
+        codes = [convert_comment(self.source_code)]
         for item in self.macros:
             codes.append(f"{item.key} = {item.value}")
         return "\n".join(codes), []
@@ -306,6 +326,15 @@ class Enumc:
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
+    def convert_py(
+        self, libname: str, defines: Defines
+    ) -> typing.Tuple[str, typing.List[str]]:
+        codes = [convert_comment(self.source_code)]
+        for item in self.items:
+            c = f"{item.key} = {item.value}"
+            codes.append(c)
+        return "\n".join(codes), []
+
 
 @dataclasses.dataclass
 class Macro:
@@ -324,6 +353,13 @@ class Macro:
             "SDL_MESSAGEBOX_COLOR_COUNT": 5,
         }
         return m[name]
+
+    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
+        codes = [
+            convert_comment(self.source_code),
+            f"{self.name} = {self.value}",
+        ]
+        return "\n".join(codes), []
 
 
 @dataclasses.dataclass
@@ -345,11 +381,22 @@ class Header:
         codes = []
         unresolve_names = []
 
+        for macro in self.macros:
+            code, _ = macro.convert_py(libname, defines)
+            codes.append(code)
+
+        codes.append("\n")
+        for enumc in self.enums:
+            code, _ = enumc.convert_py(libname, defines)
+            codes.append(code)
+
+        codes.append("\n")
         for datatype in self.datatypes:
             code, names = datatype.convert_py(libname, defines)
             codes.append(code)
             unresolve_names.extend(names)
 
+        codes.append("\n")
         if self.filename == "SDL_main.h":
             code, names = self.convert_func_sdl_main(libname, defines)
             codes.append(code)
@@ -375,7 +422,9 @@ class Header:
         return pycode_tpl.format(document=document, imports=imports_s, body=code_s)
 
     def convert_func_sdl_main(
-        self, libname: str, defines: Defines,
+        self,
+        libname: str,
+        defines: Defines,
     ) -> typing.Tuple[str, typing.List[str]]:
         """特殊处理 SDL_main.h"""
         codes = []
@@ -778,7 +827,7 @@ async def parse_enum(url: str) -> Enumc:
     assert tokens[0] == "typedef" and tokens[1] == "enum", f"invalid enum: {code}"
     name = tokens[-2]
     enumc = Enumc(url, code, name)
-    if name in ("SDL_PixelFormat", "SDL_AudioFormat"):
+    if name in ("SDL_PixelFormat", "SDL_AudioFormat"):  # parse_special
         # SDL_PixelFormat SDL_AudioFormat
         # 存在 #if 宏，根据平台会有不同的值
         # 所以不解析，后面手动生成这个枚举
@@ -924,7 +973,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:2]:
+    for header in result[:3]:
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
     if not shutil.which("uvx"):

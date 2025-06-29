@@ -14,6 +14,12 @@ from sdl3_ctypes.SDL_init import (
     SDL_AppQuit_func,
 )
 
+# #define SDL_MAIN_HANDLED 1
+SDL_MAIN_HANDLED = 1
+# #define SDL_MAIN_USE_CALLBACKS 1
+SDL_MAIN_USE_CALLBACKS = 1
+
+
 # typedef int (SDLCALL *SDL_main_func)(int argc, char *argv[]);
 SDL_main_func = ctypes.CFUNCTYPE(
     ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)
