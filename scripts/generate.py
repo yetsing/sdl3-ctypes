@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import enum
+import functools
 import hashlib
 import json
 import os
@@ -21,10 +22,32 @@ cache_dir = script_dir / ".cache"
 utf8 = "utf8"
 package_name = "sdl3_ctypes"
 
+# region utils function
+
+
+def debug_wrapper(func: typing.Callable) -> typing.Callable:
+    @functools.wraps(func)
+    def wrapper(self: typing.Any, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        try:
+            return func(self, *args, **kwargs)
+        except:
+            print(self.source_code)
+            print(self.doc_url)
+            raise
+
+    return wrapper
+
+
+def comment_multline(text: str) -> str:
+    lines = text.splitlines()
+    return "\n".join(f"# {line}" for line in lines if line.strip())
+
+# endregion
+
 
 # region Dataclass definition
 
-Defines = typing.Dict[str, typing.Union["Datatypes", "Struct"]]
+Defines = typing.Dict[str, typing.Union["Datatype", "Struct", "Enumc"]]
 
 cfunctype_tpl = """
 # {source_code}
@@ -35,6 +58,23 @@ pycode_tpl = r"""{document}
 {imports}
 {body}
 """
+
+
+def convert_enum_and_macro(type_s: str, name: str, defines: Defines) -> typing.Tuple[str, str]:
+    """转换枚举和宏为对应的整数类型"""
+    if not name:
+        # simple type
+        return type_s, name
+
+    define = defines[name]
+    if isinstance(define, Enumc):
+        return "ctypes.c_int", ""
+    if isinstance(define, Datatype) and define.type.isint():
+        newtype, name2 = define.type.convert({})  # 传空防止递归
+        assert name2 == "", f"invalid type: {name} {define}"
+        return newtype, ""
+
+    return type_s, name
 
 
 class TypeKind(enum.IntEnum):
@@ -108,7 +148,13 @@ class Type:
     # TypeKind.array
     size: int = -1
 
-    def convert(self) -> typing.Tuple[str, str]:
+    def isint(self):
+        return self.kind in {
+            TypeKind.int, TypeKind.uint8, TypeKind.uint16, TypeKind.uint32, TypeKind.uint64,
+            TypeKind.int8, TypeKind.int16, TypeKind.int32, TypeKind.int64, TypeKind.long,
+        }
+
+    def convert(self, defines: Defines) -> typing.Tuple[str, str]:
         mapping = {
             TypeKind.void: "None",
             TypeKind.bool: "ctypes.c_bool",
@@ -135,10 +181,10 @@ class Type:
                 return "ctypes.c_char_p", ""
             if self.base.kind == TypeKind.void:
                 return "ctypes.c_void_p", ""
-            name = ""
-            if self.kind == TypeKind.ident:
-                name = self.name
-            return f"ctypes.POINTER({mapping[self.base.kind]})", name
+            if self.base.kind == TypeKind.pointer and self.base.base.kind == TypeKind.void:
+                return "ctypes.POINTER(ctypes.c_void_p)", ""
+            sub, name = self.base.convert(defines)
+            return f"ctypes.POINTER({sub})", name
         if (
             self.kind == TypeKind.array
             and self.base.kind == TypeKind.pointer
@@ -149,7 +195,7 @@ class Type:
         name = ""
         if self.kind == TypeKind.ident:
             name = self.name
-        return mapping[self.kind], name
+        return convert_enum_and_macro(mapping[self.kind], name, defines)
 
 
 @dataclasses.dataclass
@@ -165,17 +211,18 @@ class Function:
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
-    def convert_py(self, libname: str) -> typing.Tuple[str, typing.List[str]]:
+    @debug_wrapper
+    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
         unresolve_names = []
         argtypes_list = []
         for t in self.argtypes:
-            s, name = t.convert()
-            argtypes_list.append(s)
+            s, name = t.convert(defines)
             if name:
                 unresolve_names.append(name)
+            argtypes_list.append(s)
         argtypes = ", ".join(argtypes_list)
-        restype, name = self.restype.convert()
-        assert name == "", f"return unresolve {name!r}"
+        restype, name = self.restype.convert(defines)
+        assert name == "", f"invalid restype: {restype} {name}"
         code = f"""
 # {self.source_code}
 {self.name} = {libname}.{self.name}
@@ -186,7 +233,7 @@ class Function:
 
 
 @dataclasses.dataclass
-class Item:
+class DatatypeItem:
     key: str
     value: int
 
@@ -197,24 +244,25 @@ class Datatype:
     source_code: str
     name: str
     type: Type
-    macros: typing.List["Item"] = dataclasses.field(default_factory=list)
+    macros: typing.List["DatatypeItem"] = dataclasses.field(default_factory=list)
     header: str = ""
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
-    def convert_py(self, libname: str) -> typing.Tuple[str, typing.List[str]]:
+    @debug_wrapper
+    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
         if self.type.kind == TypeKind.function:
             unresolve_names = []
             argtypes_list = []
             for t in self.type.argtypes:
-                s, name = t.convert()
+                s, name = t.convert(defines)
                 argtypes_list.append(s)
                 if name:
                     unresolve_names.append(name)
             argtypes = ", ".join(argtypes_list)
-            restype, name = self.type.restype.convert()
-            assert name == "", f"return unresolve {name!r}"
+            restype, name = self.type.restype.convert(defines)
+            assert name == "", f"invalid restype: {restype} {name}"
             code = cfunctype_tpl.format(
                 source_code=self.source_code,
                 name=self.name,
@@ -222,7 +270,11 @@ class Datatype:
                 argtypes=argtypes,
             )
             return code, unresolve_names
-        raise ValueError(f"unsupported code: {self.source_code}")
+        assert self.type.isint(), f"Datatype expected int, got {self.type.kind}"
+        codes = [comment_multline(self.source_code)]
+        for item in self.macros:
+            codes.append(f"{item.key} = {item.value}")
+        return "\n".join(codes), []
 
 
 @dataclasses.dataclass
@@ -294,17 +346,17 @@ class Header:
         unresolve_names = []
 
         for datatype in self.datatypes:
-            code, names = datatype.convert_py(libname)
+            code, names = datatype.convert_py(libname, defines)
             codes.append(code)
             unresolve_names.extend(names)
 
         if self.filename == "SDL_main.h":
-            code, names = self.convert_func_sdl_main(libname)
+            code, names = self.convert_func_sdl_main(libname, defines)
             codes.append(code)
             unresolve_names.extend(names)
         else:
             for func in self.functions:
-                code, names = func.convert_py(libname)
+                code, names = func.convert_py(libname, defines)
                 codes.append(code)
                 unresolve_names.extend(names)
 
@@ -323,7 +375,7 @@ class Header:
         return pycode_tpl.format(document=document, imports=imports_s, body=code_s)
 
     def convert_func_sdl_main(
-        self, libname: str
+        self, libname: str, defines: Defines,
     ) -> typing.Tuple[str, typing.List[str]]:
         """特殊处理 SDL_main.h"""
         codes = []
@@ -339,7 +391,7 @@ class Header:
         for func in self.functions:
             if func.name in ignored:
                 continue
-            code, names = func.convert_py(libname)
+            code, names = func.convert_py(libname, defines)
             codes.append(code)
             unresolve_names.extend(names)
 
@@ -555,7 +607,7 @@ def run_c_code(code: str) -> str:
         os.unlink(filename)
 
 
-def get_macros(text: str) -> typing.List[Item]:
+def get_macros(text: str) -> typing.List[DatatypeItem]:
     if not text.strip():
         return []
     print_stmts = []
@@ -622,7 +674,7 @@ int main() {{
         if not line:
             continue
         k, v = line.split("=", 1)
-        item = Item(k, int(v))
+        item = DatatypeItem(k, int(v))
         if k in specials:
             item.value = specials[k]
         result.append(item)
@@ -838,9 +890,6 @@ async def parse_header(url: str, description: str, filename: str) -> Header:
     return header
 
 
-# endregion
-
-
 async def parse(url: str) -> typing.List[Header]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     html = await html_from_url(url)
@@ -857,23 +906,27 @@ async def parse(url: str) -> typing.List[Header]:
     return result
 
 
+# endregion
+
+
 async def main():
     doc_url = "https://wiki.libsdl.org/SDL3/APIByCategory"
     result = await parse(doc_url)
 
-    defines = {}
+    defines: Defines = {}
     for header in result:
         for datatype in header.datatypes:
             defines[datatype.name] = datatype
         for struct in header.structs:
             defines[struct.name] = struct
+        for enumc in header.enums:
+            defines[enumc.name] = enumc
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result:
+    for header in result[:2]:
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
-        break
     await asyncio.sleep(1)
 
 
