@@ -5,6 +5,7 @@ Document: https://wiki.libsdl.org/SDL3/CategoryInit
 """
 
 import ctypes
+
 from sdl3_ctypes.lib import libsdl3
 from sdl3_ctypes.SDL_events import SDL_Event
 

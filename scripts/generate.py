@@ -927,6 +927,10 @@ async def main():
     for header in result[:2]:
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
+    if not shutil.which("uvx"):
+        raise RuntimeError("uvx not found")
+    subprocess.check_call(["uvx", "isort", output_dir])
+    subprocess.check_call(["uvx", "black", output_dir])
     await asyncio.sleep(1)
 
 

@@ -5,11 +5,14 @@ Document: https://wiki.libsdl.org/SDL3/CategoryMain
 """
 
 import ctypes
+
 from sdl3_ctypes.lib import libsdl3
-from sdl3_ctypes.SDL_init import SDL_AppInit_func
-from sdl3_ctypes.SDL_init import SDL_AppIterate_func
-from sdl3_ctypes.SDL_init import SDL_AppEvent_func
-from sdl3_ctypes.SDL_init import SDL_AppQuit_func
+from sdl3_ctypes.SDL_init import (
+    SDL_AppEvent_func,
+    SDL_AppInit_func,
+    SDL_AppIterate_func,
+    SDL_AppQuit_func,
+)
 
 # typedef int (SDLCALL *SDL_main_func)(int argc, char *argv[]);
 SDL_main_func = ctypes.CFUNCTYPE(
