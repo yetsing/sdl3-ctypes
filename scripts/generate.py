@@ -63,25 +63,6 @@ pycode_tpl = r"""{document}
 """
 
 
-def convert_enum_and_macro(
-    type_s: str, name: str, defines: Defines
-) -> typing.Tuple[str, str]:
-    """转换枚举和宏为对应的整数类型"""
-    if not name:
-        # simple type
-        return type_s, name
-
-    define = defines[name]
-    if isinstance(define, Enumc):
-        return "ctypes.c_int", ""
-    if isinstance(define, Datatype) and define.type.isint():
-        newtype, name2 = define.type.convert({})  # 传空防止递归
-        assert name2 == "", f"invalid type: {name} {define}"
-        return newtype, ""
-
-    return type_s, name
-
-
 class TypeKind(enum.IntEnum):
     void = enum.auto()
     bool = enum.auto()
@@ -99,6 +80,7 @@ class TypeKind(enum.IntEnum):
     long = enum.auto()
     float = enum.auto()
     double = enum.auto()
+    size_t = enum.auto()
     enumc = enum.auto()
     pointer = enum.auto()
     function = enum.auto()
@@ -135,6 +117,7 @@ class TypeKind(enum.IntEnum):
             "long": cls.long,
             "float": cls.float,
             "double": cls.double,
+            "size_t": cls.size_t,
         }
         return m.get(name.lower())
 
@@ -167,6 +150,9 @@ class Type:
             TypeKind.long,
         }
 
+    def is_void_p(self):
+        return self.kind == TypeKind.pointer and self.base.kind == TypeKind.void
+
     def convert(self, defines: Defines) -> typing.Tuple[str, str]:
         mapping = {
             TypeKind.void: "None",
@@ -185,6 +171,7 @@ class Type:
             TypeKind.long: "ctypes.c_long",
             TypeKind.float: "ctypes.c_float",
             TypeKind.double: "ctypes.c_double",
+            TypeKind.size_t: "ctypes.c_size_t",
             TypeKind.enumc: "ctypes.c_int",
             TypeKind.function: self.name,
             TypeKind.ident: self.name,
@@ -199,6 +186,8 @@ class Type:
                 and self.base.base.kind == TypeKind.void
             ):
                 return "ctypes.POINTER(ctypes.c_void_p)", ""
+            if self.base.kind == TypeKind.ident and not defines.get(self.base.name):
+                return "ctypes.c_void_p", ""
             sub, name = self.base.convert(defines)
             return f"ctypes.POINTER({sub})", name
         if (
@@ -211,7 +200,24 @@ class Type:
         name = ""
         if self.kind == TypeKind.ident:
             name = self.name
-        return convert_enum_and_macro(mapping[self.kind], name, defines)
+
+        type_s = mapping[self.kind]
+        if not name:
+            # simple type
+            return type_s, name
+
+        define = defines[name]
+        if isinstance(define, Enumc):
+            return "ctypes.c_int", ""
+        if isinstance(define, Datatype):
+            if define.type.isint():
+                newtype, name2 = define.type.convert({})  # 传空防止递归
+                assert name2 == "", f"invalid type: {name} {define}"
+                return newtype, ""
+            if define.type.is_void_p():
+                return "ctypes.c_void_p", ""
+
+        return type_s, name
 
 
 @dataclasses.dataclass
@@ -240,7 +246,8 @@ class Function:
             argtypes_list.append(s)
         argtypes = ", ".join(argtypes_list)
         restype, name = self.restype.convert(defines)
-        assert name == "", f"invalid restype: {restype} {name}"
+        if name:
+            unresolve_names.append(name)
         code = f"""
 {convert_comment(self.source_code)}
 {self.name} = {libname}.{self.name}
@@ -282,15 +289,20 @@ class Datatype:
                     unresolve_names.append(name)
             argtypes = ", ".join(argtypes_list)
             restype, name = self.type.restype.convert(defines)
-            assert name == "", f"invalid restype: {restype} {name}"
+            if name:
+                unresolve_names.append(name)
             code = cfunctype_tpl.format(
                 source_code=convert_comment(self.source_code),
                 name=self.name,
                 restype=restype,
                 argtypes=argtypes,
             )
+            if self.name == "SDL_EGLIntArrayCallback":
+                print("SDL_EGLIntArrayCallback", unresolve_names)
             return code, unresolve_names
-        assert self.type.isint(), f"Datatype expected int, got {self.type.kind}"
+        if not self.type.isint():
+            print(f"Skipping datatype: {self.source_code}")
+            return convert_comment(self.source_code), []
         codes = [convert_comment(self.source_code)]
         for item in self.macros:
             codes.append(f"{item.key} = {item.value}")
@@ -308,6 +320,33 @@ class Struct:
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
+
+    def convert_py(
+        self, libname: str, defines: Defines
+    ) -> typing.Tuple[str, typing.List[str]]:
+        fields = []
+        unresolve_names = []
+        ref_self = False  # 结构体有字段指向自身
+        ref_self_idx = -1
+        for argname, argtype in zip(self.argnames, self.argtypes):
+            type_s, name = argtype.convert(defines)
+            if name == self.name:
+                s = f'("{argname}", ctypes.c_void_p)'
+                ref_self = True
+            else:
+                s = f'("{argname}", {type_s})'
+            if name and name != self.name:
+                unresolve_names.append(name)
+            fields.append(s)
+            ref_self_idx += 1
+
+        codes = [
+            convert_comment(self.source_code),
+            f"class {self.name}(ctypes.Structure):\n    _fields_ = [{', '.join(fields)}]",
+        ]
+        if ref_self:
+            codes.append(f"{self.name}._fields_[{ref_self_idx}] = (\"{self.argnames[ref_self_idx]}\", ctypes.POINTER({self.name}))")
+        return "\n".join(codes), unresolve_names
 
 
 @dataclasses.dataclass
@@ -354,11 +393,22 @@ class Macro:
         }
         return m[name]
 
-    def convert_py(self, libname: str, defines: Defines) -> typing.Tuple[str, typing.List[str]]:
+    def convert_py(
+        self, libname: str, defines: Defines
+    ) -> typing.Tuple[str, typing.List[str]]:
+        ignore_names = {"SDL_ASSERT_LEVEL", "SDL_FILE", "SDL_FUNCTION", "SDL_LINE"}
+        if ("(" in self.name and ")" in self.name) or self.name in ignore_names:
+            print(f"Skipping function-like macro: {self.source_code}")
+            return convert_comment(self.source_code), []
         codes = [
             convert_comment(self.source_code),
-            f"{self.name} = {self.value}",
         ]
+        if self.name == "SDL_VERSION":
+            codes.append(
+                f"SDL_VERSION = SDL_MAJOR_VERSION * 1000000 + SDL_MINOR_VERSION * 1000 + SDL_MICRO_VERSION"
+            )
+        else:
+            codes.append(f"{self.name} = {self.value}")
         return "\n".join(codes), []
 
 
@@ -391,6 +441,11 @@ class Header:
             codes.append(code)
 
         codes.append("\n")
+        for struct in self.structs:
+            code, _ = struct.convert_py(libname, defines)
+            codes.append(code)
+
+        codes.append("\n")
         for datatype in self.datatypes:
             code, names = datatype.convert_py(libname, defines)
             codes.append(code)
@@ -403,6 +458,15 @@ class Header:
             unresolve_names.extend(names)
         else:
             for func in self.functions:
+                has_varargs = False
+                for argtype in func.argtypes:
+                    if argtype.kind == TypeKind.varargs or argtype.name == "va_list":
+                        has_varargs = True
+                        break
+                if has_varargs:
+                    codes.append(convert_comment(func.source_code))
+                    print(f"Skipping function: {func.source_code}")
+                    continue
                 code, names = func.convert_py(libname, defines)
                 codes.append(code)
                 unresolve_names.extend(names)
@@ -876,11 +940,17 @@ async def parse_enum(url: str) -> Enumc:
 async def parse_macro(url: str) -> Macro:
     code = await get_source_code(url)
 
-    tokens = code.replace("\\\n", "").split(" ", 2)
+    code2 = code.replace("\\\n", "")
+    tokens = code2.split(" ", 2)
     assert len(tokens) == 3 and tokens[0] == "#define", f"invalid macro: {code}"
 
     key = tokens[1].strip()
     value = tokens[2].strip()
+    if "(" in key and (")" not in key):
+        define_idx = code2.index("define")
+        rparen_idx = code2.index(")")
+        key = code2[define_idx + len("define") : rparen_idx + 1].strip()
+        value = code2[rparen_idx + 1 :].strip()
     if value.isdigit() or value.startswith("0x"):
         value = value.rstrip("luLU")
         base = 10
@@ -965,6 +1035,8 @@ async def main():
     defines: Defines = {}
     for header in result:
         for datatype in header.datatypes:
+            if datatype.type.kind == TypeKind.ident:
+                continue
             defines[datatype.name] = datatype
         for struct in header.structs:
             defines[struct.name] = struct
@@ -973,13 +1045,13 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:4]:
+    for header in result[:5]:
+        print(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
-    if not shutil.which("uvx"):
-        raise RuntimeError("uvx not found")
-    subprocess.check_call(["uvx", "isort", output_dir])
-    subprocess.check_call(["uvx", "black", output_dir])
+    subprocess.check_call(["isort", output_dir], stdout=subprocess.DEVNULL)
+    subprocess.check_call(["black", output_dir], stdout=subprocess.DEVNULL)
+    print("📜  Done")
     await asyncio.sleep(1)
 
 

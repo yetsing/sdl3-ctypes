@@ -10,6 +10,8 @@ dependencies = []
 dev = [
     "aiohttp",
     "beautifulsoup4>=4.13.4",
+    "black>=24.8.0",
+    "isort>=5.13.2",
 ]
 
 [[tool.uv.index]]
