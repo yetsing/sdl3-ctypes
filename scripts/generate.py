@@ -315,7 +315,7 @@ class Datatype:
             return convert_comment(self.source_code), []
         codes = [convert_comment(self.source_code)]
         for item in self.macros:
-            codes.append(f"{item.key} = {item.value}")
+            codes.append(f"{item.key} = {hex(item.value)}")
         return "\n".join(codes), []
 
 
@@ -420,7 +420,10 @@ class Macro:
                 f"SDL_VERSION = SDL_MAJOR_VERSION * 1000000 + SDL_MINOR_VERSION * 1000 + SDL_MICRO_VERSION"
             )
         else:
-            codes.append(f"{self.name} = {self.value}")
+            value = self.value
+            if isinstance(value, str) and value.isdigit():
+                value = hex(int(value))
+            codes.append(f"{self.name} = {value}")
         return "\n".join(codes), []
 
 
@@ -1057,7 +1060,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:7]:
+    for header in result[:8]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
