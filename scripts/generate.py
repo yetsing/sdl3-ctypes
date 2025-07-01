@@ -491,8 +491,9 @@ class Header:
 
         codes.append("\n")
         for struct in self.structs:
-            code, _ = struct.convert_py(libname, defines)
+            code, names = struct.convert_py(libname, defines)
             codes.append(code)
+            unresolve_names.extend(names)
 
         codes.append("\n")
         for datatype in self.datatypes:
@@ -920,6 +921,9 @@ async def parse_struct(url: str) -> Struct:
     struct = Struct(url, code, name)
     struct.argtypes = argtypes
     struct.argnames = argnames
+
+    if struct.name == "SDL_GPUTextureSamplerBinding":
+        print(struct)
     return struct
 
 
@@ -1083,9 +1087,11 @@ async def main():
         for enumc in header.enums:
             defines[enumc.name] = enumc
 
+    print("SDL_GPUTextureSamplerBinding", defines["SDL_GPUTextureSamplerBinding"])
+
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:9]:
+    for header in result[:10]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
