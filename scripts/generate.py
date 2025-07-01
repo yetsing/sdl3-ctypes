@@ -735,14 +735,36 @@ def split_by_value(lst: typing.List[str], value: str) -> typing.List[typing.List
 
 def get_arguments(
     tokens: typing.List[str],
-    seperator: str = ",",
 ) -> typing.Tuple[typing.List[Type], typing.List[str]]:
     if not tokens or tokens == ["void"]:
         return [], []
     argnames = []
     argtypes = []
-    parts = split_by_value(tokens, seperator)
+    parts = split_by_value(tokens, ",")
     for part in parts:
+        ty, name = get_type_and_name(part)
+        argnames.append(name)
+        argtypes.append(ty)
+    return argtypes, argnames
+
+
+def get_struct_fields(tokens: typing.List[str]) -> typing.Tuple[typing.List[Type], typing.List[str]]:
+    argnames = []
+    argtypes = []
+    parts = split_by_value(tokens, ";")
+    for part in parts:
+        if "," in part:
+            subparts = split_by_value(part, ",")
+            front = subparts[0]
+            ty, name = get_type_and_name(front)
+            argnames.append(name)
+            argtypes.append(ty)
+            for subpart in subparts[1:]:
+                assert len(subpart) == 1, f"invalid struct {subpart}, tokens={tokens}"
+                argnames.append(subpart[0])
+                argtypes.append(ty)
+            continue
+
         ty, name = get_type_and_name(part)
         argnames.append(name)
         argtypes.append(ty)
@@ -929,7 +951,10 @@ async def parse_struct(url: str) -> Struct:
         raise ValueError(f"invalid struct: {code}")
     lbrace_idx = tokens.index("{")
     rbrace_idx = tokens.index("}")
-    argtypes, argnames = get_arguments(tokens[lbrace_idx + 1 : rbrace_idx], ";")
+    argtypes = []
+    argnames = []
+    if name not in {"SDL_VirtualJoystickDesc", "SDL_StorageInterface", "SDL_IOStreamInterface"}:  # parse_special
+        argtypes, argnames = get_struct_fields(tokens[lbrace_idx + 1 : rbrace_idx])
 
     struct = Struct(url, code, name)
     struct.argtypes = argtypes
@@ -1101,7 +1126,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:12]:
+    for header in result[:13]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
