@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import datetime
 import enum
 import functools
 import hashlib
@@ -25,6 +26,17 @@ package_name = "sdl3_ctypes"
 # region utils function
 
 
+ljog = print
+
+
+def info(msg: str) -> None:
+    ljog(f"[ℹ️] {datetime.datetime.now()} {msg}")
+
+
+def debug(msg: str) -> None:
+    ljog(f"[🧪] {datetime.datetime.now()} {msg}")
+
+
 def debug_wrapper(func: typing.Callable) -> typing.Callable:
     @functools.wraps(func)
     def wrapper(
@@ -33,8 +45,8 @@ def debug_wrapper(func: typing.Callable) -> typing.Callable:
         try:
             return func(self, *args, **kwargs)
         except:
-            print(self.source_code)
-            print(self.doc_url)
+            debug(self.source_code)
+            debug(self.doc_url)
             raise
 
     return wrapper
@@ -297,11 +309,9 @@ class Datatype:
                 restype=restype,
                 argtypes=argtypes,
             )
-            if self.name == "SDL_EGLIntArrayCallback":
-                print("SDL_EGLIntArrayCallback", unresolve_names)
             return code, unresolve_names
         if not self.type.isint():
-            print(f"Skipping datatype: {self.source_code}")
+            info(f"Skipping datatype: {self.source_code}")
             return convert_comment(self.source_code), []
         codes = [convert_comment(self.source_code)]
         for item in self.macros:
@@ -345,7 +355,9 @@ class Struct:
             f"class {self.name}(ctypes.Structure):\n    _fields_ = [{', '.join(fields)}]",
         ]
         if ref_self:
-            codes.append(f"{self.name}._fields_[{ref_self_idx}] = (\"{self.argnames[ref_self_idx]}\", ctypes.POINTER({self.name}))")
+            codes.append(
+                f'{self.name}._fields_[{ref_self_idx}] = ("{self.argnames[ref_self_idx]}", ctypes.POINTER({self.name}))'
+            )
         return "\n".join(codes), unresolve_names
 
 
@@ -398,7 +410,7 @@ class Macro:
     ) -> typing.Tuple[str, typing.List[str]]:
         ignore_names = {"SDL_ASSERT_LEVEL", "SDL_FILE", "SDL_FUNCTION", "SDL_LINE"}
         if ("(" in self.name and ")" in self.name) or self.name in ignore_names:
-            print(f"Skipping function-like macro: {self.source_code}")
+            info(f"Skipping function-like macro: {self.source_code}")
             return convert_comment(self.source_code), []
         codes = [
             convert_comment(self.source_code),
@@ -465,7 +477,7 @@ class Header:
                         break
                 if has_varargs:
                     codes.append(convert_comment(func.source_code))
-                    print(f"Skipping function: {func.source_code}")
+                    info(f"Skipping function: {func.source_code}")
                     continue
                 code, names = func.convert_py(libname, defines)
                 codes.append(code)
@@ -1045,13 +1057,13 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:5]:
-        print(f"🔨  Generate {header.filename}")
+    for header in result[:6]:
+        info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
     subprocess.check_call(["isort", output_dir], stdout=subprocess.DEVNULL)
     subprocess.check_call(["black", output_dir], stdout=subprocess.DEVNULL)
-    print("📜  Done")
+    info("📜  Done")
     await asyncio.sleep(1)
 
 
