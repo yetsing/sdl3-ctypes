@@ -165,6 +165,12 @@ class Type:
     def is_void_p(self):
         return self.kind == TypeKind.pointer and self.base.kind == TypeKind.void
 
+    def is_pointer(self):
+        return self.kind == TypeKind.pointer
+
+    def is_ident_p(self):
+        return self.kind == TypeKind.pointer and self.base.kind == TypeKind.ident
+
     def convert(self, defines: Defines) -> typing.Tuple[str, str]:
         mapping = {
             TypeKind.void: "None",
@@ -228,6 +234,8 @@ class Type:
                 return newtype, ""
             if define.type.is_void_p():
                 return "ctypes.c_void_p", ""
+            elif define.type.is_ident_p() and define.type.base.name not in defines:
+                return "ctypes.c_void_p", ""
 
         return type_s, name
 
@@ -249,6 +257,15 @@ class Function:
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
+        has_varargs = False
+        for argtype in self.argtypes:
+            if argtype.kind == TypeKind.varargs or argtype.name == "va_list":
+                has_varargs = True
+                break
+        if has_varargs:
+            info(f"Skipping function: {self.source_code}")
+            return convert_comment(self.source_code), []
+
         unresolve_names = []
         argtypes_list = []
         for t in self.argtypes:
@@ -260,13 +277,21 @@ class Function:
         restype, name = self.restype.convert(defines)
         if name:
             unresolve_names.append(name)
-        code = f"""
-{convert_comment(self.source_code)}
-{self.name} = {libname}.{self.name}
-{self.name}.argtypes = [{argtypes}]
-{self.name}.restype = {restype}
-"""
-        return code, unresolve_names
+        codes = [
+            "",
+            f"{convert_comment(self.source_code)}",
+            f"{self.name} = {libname}.{self.name}",
+            f"{self.name}.argtypes = [{argtypes}]",
+            f"{self.name}.restype = {restype}",
+        ]
+
+        if self.name == "SDL_SetWindowSurfaceVSync":
+            if "SDL_WINDOW_SURFACE_VSYNC_DISABLED" in self.source_code:
+                codes.append("SDL_WINDOW_SURFACE_VSYNC_DISABLED = 0")
+            if "SDL_WINDOW_SURFACE_VSYNC_ADAPTIVE" in self.source_code:
+                codes.append("SDL_WINDOW_SURFACE_VSYNC_ADAPTIVE = -1")
+        codes.append("")
+        return "\n".join(codes), unresolve_names
 
 
 @dataclasses.dataclass
@@ -408,7 +433,14 @@ class Macro:
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
-        ignore_names = {"SDL_ASSERT_LEVEL", "SDL_FILE", "SDL_FUNCTION", "SDL_LINE"}
+        ignore_names = {
+            "SDL_ASSERT_LEVEL",
+            "SDL_FILE",
+            "SDL_FUNCTION",
+            "SDL_LINE",
+            "SDL_WINDOWPOS_CENTERED",
+            "SDL_WINDOWPOS_UNDEFINED",
+        }
         if ("(" in self.name and ")" in self.name) or self.name in ignore_names:
             info(f"Skipping function-like macro: {self.source_code}")
             return convert_comment(self.source_code), []
@@ -423,6 +455,8 @@ class Macro:
             value = self.value
             if isinstance(value, str) and value.isdigit():
                 value = hex(int(value))
+            if isinstance(value, int) and value > 255:
+                value = hex(value)
             codes.append(f"{self.name} = {value}")
         return "\n".join(codes), []
 
@@ -473,15 +507,6 @@ class Header:
             unresolve_names.extend(names)
         else:
             for func in self.functions:
-                has_varargs = False
-                for argtype in func.argtypes:
-                    if argtype.kind == TypeKind.varargs or argtype.name == "va_list":
-                        has_varargs = True
-                        break
-                if has_varargs:
-                    codes.append(convert_comment(func.source_code))
-                    info(f"Skipping function: {func.source_code}")
-                    continue
                 code, names = func.convert_py(libname, defines)
                 codes.append(code)
                 unresolve_names.extend(names)
@@ -1060,7 +1085,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:8]:
+    for header in result[:9]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
