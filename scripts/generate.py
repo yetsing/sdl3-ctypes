@@ -354,10 +354,10 @@ class Struct:
             convert_comment(self.source_code),
             f"class {self.name}(ctypes.Structure):\n    _fields_ = [{', '.join(fields)}]",
         ]
-        if ref_self:
-            codes.append(
-                f'{self.name}._fields_[{ref_self_idx}] = ("{self.argnames[ref_self_idx]}", ctypes.POINTER({self.name}))'
-            )
+        # if ref_self:
+        #     codes.append(
+        #         f'{self.name}._fields_[{ref_self_idx}] = ("{self.argnames[ref_self_idx]}", ctypes.POINTER({self.name}))'
+        #     )
         return "\n".join(codes), unresolve_names
 
 
@@ -1057,7 +1057,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:6]:
+    for header in result[:7]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
