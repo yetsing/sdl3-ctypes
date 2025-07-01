@@ -172,6 +172,9 @@ class Type:
         return self.kind == TypeKind.pointer and self.base.kind == TypeKind.ident
 
     def convert(self, defines: Defines) -> typing.Tuple[str, str]:
+        if self.kind == TypeKind.array and self.size > 0:
+            type_s, name = self.base.convert(defines)
+            return f"{type_s} * {self.size}", name
         mapping = {
             TypeKind.void: "None",
             TypeKind.bool: "ctypes.c_bool",
@@ -356,6 +359,7 @@ class Struct:
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
+    @debug_wrapper
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
@@ -402,12 +406,20 @@ class Enumc:
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
 
+    @debug_wrapper
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
         codes = [convert_comment(self.source_code)]
+        pyfile = script_dir / f"{self.name.lower()}.py"
+        if pyfile.exists():
+            codes.append(pyfile.read_text(utf8))
+            return "\n".join(codes), []
         for item in self.items:
-            c = f"{item.key} = {item.value}"
+            value = item.value
+            if isinstance(value, int) and value > 255:
+                value = hex(value)
+            c = f"{item.key} = {value}"
             codes.append(c)
         return "\n".join(codes), []
 
@@ -430,6 +442,7 @@ class Macro:
         }
         return m[name]
 
+    @debug_wrapper
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
@@ -922,8 +935,6 @@ async def parse_struct(url: str) -> Struct:
     struct.argtypes = argtypes
     struct.argnames = argnames
 
-    if struct.name == "SDL_GPUTextureSamplerBinding":
-        print(struct)
     return struct
 
 
@@ -959,7 +970,7 @@ async def parse_enum(url: str) -> Enumc:
             assert part[1] == "=", f"invalid enum value: {code}"
             key = part[0]
             item.key = key
-            value_s = part[2].rstrip("luLu")
+            value_s = part[2].rstrip().rstrip("luLuf")
             try:
                 base = 10
                 if value_s.startswith("0x") or value_s.startswith("0X"):
@@ -995,8 +1006,9 @@ async def parse_macro(url: str) -> Macro:
         rparen_idx = code2.index(")")
         key = code2[define_idx + len("define") : rparen_idx + 1].strip()
         value = code2[rparen_idx + 1 :].strip()
+    if value[0].isdigit():
+        value = value.rstrip("luLUf")
     if value.isdigit() or value.startswith("0x"):
-        value = value.rstrip("luLU")
         base = 10
         if value.startswith("0x"):
             base = 16
@@ -1087,11 +1099,9 @@ async def main():
         for enumc in header.enums:
             defines[enumc.name] = enumc
 
-    print("SDL_GPUTextureSamplerBinding", defines["SDL_GPUTextureSamplerBinding"])
-
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:10]:
+    for header in result[:11]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
