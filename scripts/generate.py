@@ -248,6 +248,7 @@ class Function:
     doc_url: str
     source_code: str
     name: str
+    argsource: typing.List[str] = dataclasses.field(default_factory=list)
     argnames: typing.List[str] = dataclasses.field(default_factory=list)
     argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
     restype: typing.Optional["Type"] = None
@@ -905,6 +906,8 @@ async def parse_function(url: str) -> Function:
     function.restype = restype
 
     argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
+    function.argsource = code[code.index("(") + 1:code.index(")")].split(",")
+    function.argsource = [x.strip() for x in function.argsource]
     function.argtypes = argtypes
     function.argnames = argnames
     return function
@@ -1126,7 +1129,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:17]:
+    for header in result[:18]:
         if header.filename == "SDL_vulkan.h":
             continue
         info(f"🔨  Generate {header.filename}")
