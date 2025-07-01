@@ -1101,7 +1101,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:11]:
+    for header in result[:12]:
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
         output_filename.write_text(header.convert_py(libname, defines))
