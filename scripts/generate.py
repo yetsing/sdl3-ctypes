@@ -74,6 +74,8 @@ pycode_tpl = r"""{document}
 {body}
 """
 
+ignore_structs = {"SDL_VirtualJoystickDesc", "SDL_StorageInterface", "SDL_IOStreamInterface"}
+
 
 class TypeKind(enum.IntEnum):
     void = enum.auto()
@@ -365,6 +367,8 @@ class Struct:
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
+        if self.name in ignore_structs:
+            return convert_comment(self.source_code), []
         fields = []
         unresolve_names = []
         ref_self = False  # 结构体有字段指向自身
@@ -963,7 +967,7 @@ async def parse_struct(url: str) -> Struct:
     rbrace_idx = tokens.index("}")
     argtypes = []
     argnames = []
-    if name not in {"SDL_VirtualJoystickDesc", "SDL_StorageInterface", "SDL_IOStreamInterface"}:  # parse_special
+    if name not in ignore_structs:
         argtypes, argnames = get_struct_fields(tokens[lbrace_idx + 1 : rbrace_idx])
 
     struct = Struct(url, code, name)
@@ -1149,8 +1153,8 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:23]:
-        if header.filename == "SDL_vulkan.h":
+    for header in result[:25]:
+        if header.filename in {"SDL_vulkan.h", "SDL_joystick.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
