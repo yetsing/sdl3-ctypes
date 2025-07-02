@@ -344,6 +344,8 @@ class Datatype:
                 if name:
                     unresolve_names.append(name)
             argtypes = ", ".join(argtypes_list)
+            if argtypes == "None":
+                argtypes = ""
             restype, name = self.type.restype.convert(defines)
             if name:
                 unresolve_names.append(name)
@@ -469,6 +471,9 @@ class Macro:
             "SDL_AUDIO_MASK_FLOAT": "1<<8",
             "SDL_AUDIO_MASK_SIGNED": "1<<15",
             "SDL_VERSION": "SDL_MAJOR_VERSION * 1000000 + SDL_MINOR_VERSION * 1000 + SDL_MICRO_VERSION",
+            "SDL_FLT_EPSILON": "1.1920928955078125e-07",
+            "SDL_PI_D": "3.141592653589793238462643383279502884",
+            "SDL_PI_F": "3.141592653589793238462643383279502884",
         }
         return mapping.get(key)
 
@@ -502,6 +507,22 @@ class Macro:
             "SDL_SCOPED_CAPABILITY",
             "SDL_BYTEORDER",
             "SDL_FLOATWORDORDER",
+            "SDL_PRILL_PREFIX",
+            "SDL_PRILLd",
+            "SDL_PRILLu",
+            "SDL_PRILLX",
+            "SDL_PRILLx",
+            "SDL_PRINTF_FORMAT_STRING",
+            "SDL_PRIs32",
+            "SDL_PRIS64",
+            "SDL_PRIu32",
+            "SDL_PRIu64",
+            "SDL_PRIX32",
+            "SDL_PRIx32",
+            "SDL_PRIx64",
+            "SDL_PRIX64",
+            "SDL_SCANF_FORMAT_STRING",
+            "SDL_SIZE_MAX",
         }
         if ("(" in self.name and ")" in self.name) or self.name in ignore_names:
             info(f"Skipping function-like macro: {self.source_code}")
@@ -1195,7 +1216,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:46]:
+    for header in result:
         if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h", "SDL_platform.h", "SDL_endian.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
