@@ -7,13 +7,6 @@ Document: https://wiki.libsdl.org/SDL3/CategoryEvents
 import ctypes
 
 from sdl3_ctypes.lib import libsdl3
-from sdl3_ctypes.SDL_pen import (
-    SDL_PenAxisEvent,
-    SDL_PenButtonEvent,
-    SDL_PenMotionEvent,
-    SDL_PenProximityEvent,
-    SDL_PenTouchEvent,
-)
 
 # typedef enum SDL_EventAction
 # {

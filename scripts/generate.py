@@ -57,6 +57,13 @@ def convert_comment(text: str) -> str:
     return "\n".join(f"# {line}" for line in lines if line.strip())
 
 
+def list_find(arr: list, x: typing.Any) -> typing.Any:
+    try:
+        return arr.index(x)
+    except ValueError:
+        return -1
+
+
 # endregion
 
 
@@ -74,7 +81,11 @@ pycode_tpl = r"""{document}
 {body}
 """
 
-ignore_structs = {"SDL_VirtualJoystickDesc", "SDL_StorageInterface", "SDL_IOStreamInterface"}
+ignore_structs = {
+    "SDL_VirtualJoystickDesc",
+    "SDL_StorageInterface",
+    "SDL_IOStreamInterface",
+}
 
 
 class TypeKind(enum.IntEnum):
@@ -771,7 +782,9 @@ def get_arguments(
     return argtypes, argnames
 
 
-def get_struct_fields(tokens: typing.List[str]) -> typing.Tuple[typing.List[Type], typing.List[str]]:
+def get_struct_fields(
+    tokens: typing.List[str],
+) -> typing.Tuple[typing.List[Type], typing.List[str]]:
     argnames = []
     argtypes = []
     parts = split_by_value(tokens, ";")
@@ -928,7 +941,7 @@ async def parse_function(url: str) -> Function:
     function.restype = restype
 
     argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
-    function.argsource = code[code.index("(") + 1:code.index(")")].split(",")
+    function.argsource = code[code.index("(") + 1 : code.index(")")].split(",")
     function.argsource = [x.strip() for x in function.argsource]
     function.argtypes = argtypes
     function.argnames = argnames
@@ -950,7 +963,7 @@ async def parse_datatype(url: str) -> Datatype:
         lparen_idx = tokens.index("(", rparen_idx + 1)
         rparen_idx = tokens.index(")", rparen_idx + 1)
         argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
-        argsource = code[code.index("(") + 1:code.index(")")].split(",")
+        argsource = code[code.index("(") + 1 : code.index(")")].split(",")
         argsource = [x.strip() for x in argsource]
         ty = Type(TypeKind.function, name, None, argsource, argnames, argtypes, restype)
     else:
@@ -1098,18 +1111,22 @@ async def parse_header(url: str, description: str, filename: str) -> Header:
         struct.header = header.filename
         header.structs.append(struct)
 
-    if filename == "SDL_events.h":
-        # 将 SDL_Event 移到最后
-        structs = []
-        sdl_event_struct = None
-        for struct in header.structs:
-            if struct.name == "SDL_Event":
-                sdl_event_struct = struct
-                continue
-            structs.append(struct)
-        if sdl_event_struct:
-            structs.append(sdl_event_struct)
-            header.structs = structs
+    struct_priority = {
+        "SDL_GPUBlitRegion": 0,
+        "SDL_GPUVertexInputState": 0,
+        "SDL_GPURasterizerState": 0,
+        "SDL_GPUMultisampleState": 0,
+        "SDL_GPUGraphicsPipelineTargetInfo": 0,
+        "SDL_GPUStencilOpState": 0,
+        "SDL_GPUVertexBufferDescription": 0,
+        "SDL_GPUColorTargetDescription": 0,
+        "SDL_GPUVertexAttribute": 0,
+        "SDL_GPUColorTargetBlendState": 0,
+        "SDL_Event": 100,
+    }
+    header.structs.sort(key=lambda x: struct_priority.get(x.name, 50))
+    if header.filename == "SDL_pen.h":
+        header.structs = []
 
     enums_section = soup.select_one("#enums + ul")
     for tag_a in enums_section.select("a"):
@@ -1166,7 +1183,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:31]:
+    for header in result[:32]:
         if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
