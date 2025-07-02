@@ -143,6 +143,7 @@ class TypeKind(enum.IntEnum):
             "float": cls.float,
             "double": cls.double,
             "size_t": cls.size_t,
+            "sint64": cls.int64,
         }
         return m.get(name.lower())
 
@@ -976,6 +977,9 @@ async def parse_datatype(url: str) -> Datatype:
         part for part in parts[1:] if part and (not part.startswith("#endif"))
     )
     datatype.macros = get_macros(macro_code)
+
+    if datatype.name == "SDL_Time":
+        print(datatype)
     return datatype
 
 
@@ -1185,7 +1189,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:36]:
+    for header in result[:37]:
         if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
