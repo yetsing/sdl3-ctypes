@@ -420,7 +420,7 @@ class Enumc:
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
         codes = [convert_comment(self.source_code)]
-        pyfile = script_dir / f"{self.name.lower()}.py"
+        pyfile = script_dir / f"{self.name}.py"
         if pyfile.exists():
             codes.append(pyfile.read_text(utf8))
             return "\n".join(codes), []
@@ -439,6 +439,19 @@ class Macro:
     source_code: str
     name: str
     value: typing.Union[int, str]
+
+    @classmethod
+    def get_manual_value(cls, key: str) -> typing.Optional[str]:
+        mapping = {
+            "SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK": "0xFFFFFFFF",
+            "SDL_AUDIO_DEVICE_DEFAULT_RECORDING": "0xFFFFFFFE",
+            "SDL_AUDIO_MASK_BIG_ENDIAN": "1<<12",
+            "SDL_AUDIO_MASK_BITSIZE": "0xFF",
+            "SDL_AUDIO_MASK_FLOAT": "1<<8",
+            "SDL_AUDIO_MASK_SIGNED": "1<<15",
+            "SDL_VERSION": "SDL_MAJOR_VERSION * 1000000 + SDL_MINOR_VERSION * 1000 + SDL_MICRO_VERSION",
+        }
+        return mapping.get(key)
 
     def __str__(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=4)
@@ -473,17 +486,14 @@ class Macro:
         codes = [
             convert_comment(self.source_code),
         ]
-        if self.name == "SDL_VERSION":
-            codes.append(
-                f"SDL_VERSION = SDL_MAJOR_VERSION * 1000000 + SDL_MINOR_VERSION * 1000 + SDL_MICRO_VERSION"
-            )
-        else:
+        value = self.get_manual_value(self.name)
+        if not value:
             value = self.value
             if isinstance(value, str) and value.isdigit():
                 value = hex(int(value))
             if isinstance(value, int) and value > 255:
                 value = hex(value)
-            codes.append(f"{self.name} = {value}")
+        codes.append(f"{self.name} = {value}")
         return "\n".join(codes), []
 
 
@@ -1156,8 +1166,8 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:28]:
-        if header.filename in {"SDL_vulkan.h", "SDL_joystick.h"}:
+    for header in result[:31]:
+        if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
