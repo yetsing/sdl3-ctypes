@@ -381,9 +381,12 @@ class Struct:
             fields.append(s)
             ref_self_idx += 1
 
+        cls_name = "Structure"
+        if "union" in self.source_code:
+            cls_name = "Union"
         codes = [
             convert_comment(self.source_code),
-            f"class {self.name}(ctypes.Structure):\n    _fields_ = [{', '.join(fields)}]",
+            f"class {self.name}(ctypes.{cls_name}):\n    _fields_ = [{', '.join(fields)}]",
         ]
         # if ref_self:
         #     codes.append(
@@ -1077,6 +1080,19 @@ async def parse_header(url: str, description: str, filename: str) -> Header:
         struct.header = header.filename
         header.structs.append(struct)
 
+    if filename == "SDL_events.h":
+        # 将 SDL_Event 移到最后
+        structs = []
+        sdl_event_struct = None
+        for struct in header.structs:
+            if struct.name == "SDL_Event":
+                sdl_event_struct = struct
+                continue
+            structs.append(struct)
+        if sdl_event_struct:
+            structs.append(sdl_event_struct)
+            header.structs = structs
+
     enums_section = soup.select_one("#enums + ul")
     for tag_a in enums_section.select("a"):
         def_url = urllib.parse.urljoin(url, tag_a["href"])
@@ -1132,7 +1148,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:18]:
+    for header in result[:19]:
         if header.filename == "SDL_vulkan.h":
             continue
         info(f"🔨  Generate {header.filename}")
