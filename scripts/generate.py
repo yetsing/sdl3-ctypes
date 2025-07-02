@@ -1148,7 +1148,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:21]:
+    for header in result[:22]:
         if header.filename == "SDL_vulkan.h":
             continue
         info(f"🔨  Generate {header.filename}")
