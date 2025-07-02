@@ -1183,7 +1183,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:32]:
+    for header in result[:33]:
         if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
