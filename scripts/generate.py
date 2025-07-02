@@ -500,6 +500,8 @@ class Macro:
             "SDL_PEN_TOUCHID",
             "SDL_NO_THREAD_SAFETY_ANALYSIS",
             "SDL_SCOPED_CAPABILITY",
+            "SDL_BYTEORDER",
+            "SDL_FLOATWORDORDER",
         }
         if ("(" in self.name and ")" in self.name) or self.name in ignore_names:
             info(f"Skipping function-like macro: {self.source_code}")
@@ -1193,8 +1195,8 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:44]:
-        if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h", "SDL_platform.h"}:
+    for header in result[:46]:
+        if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h", "SDL_platform.h", "SDL_endian.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
         output_filename = output_dir / (header.filename.replace(".h", ".py"))
