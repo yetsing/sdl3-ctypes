@@ -141,6 +141,7 @@ class Type:
     base: typing.Optional["Type"] = None
 
     # TypeKind.function
+    argsource: typing.List[str] = dataclasses.field(default_factory=list)
     argnames: typing.List[str] = dataclasses.field(default_factory=list)
     argtypes: typing.List["Type"] = dataclasses.field(default_factory=list)
     restype: typing.Optional["Type"] = None
@@ -928,7 +929,9 @@ async def parse_datatype(url: str) -> Datatype:
         lparen_idx = tokens.index("(", rparen_idx + 1)
         rparen_idx = tokens.index(")", rparen_idx + 1)
         argtypes, argnames = get_arguments(tokens[lparen_idx + 1 : rparen_idx])
-        ty = Type(TypeKind.function, name, None, argnames, argtypes, restype)
+        argsource = code[code.index("(") + 1:code.index(")")].split(",")
+        argsource = [x.strip() for x in argsource]
+        ty = Type(TypeKind.function, name, None, argsource, argnames, argtypes, restype)
     else:
         ty, name = get_type_and_name(tokens[1:-1])
     datatype = Datatype(url, code, name, ty)
