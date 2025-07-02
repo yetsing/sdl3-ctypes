@@ -379,8 +379,15 @@ class Struct:
     def convert_py(
         self, libname: str, defines: Defines
     ) -> typing.Tuple[str, typing.List[str]]:
+        codes = [convert_comment(self.source_code)]
+        pyfile = script_dir / f"{self.name}.py"
+        if pyfile.exists():
+            codes.append(pyfile.read_text(utf8))
+            return "\n".join(codes), []
+
         if self.name in ignore_structs:
             return convert_comment(self.source_code), []
+
         fields = []
         unresolve_names = []
         ref_self = False  # 结构体有字段指向自身
@@ -977,9 +984,6 @@ async def parse_datatype(url: str) -> Datatype:
         part for part in parts[1:] if part and (not part.startswith("#endif"))
     )
     datatype.macros = get_macros(macro_code)
-
-    if datatype.name == "SDL_Time":
-        print(datatype)
     return datatype
 
 
@@ -1189,7 +1193,7 @@ async def main():
 
     libname = "libsdl3"
     output_dir = script_dir.parent / package_name
-    for header in result[:38]:
+    for header in result[:39]:
         if header.filename in {"SDL_vulkan.h", "SDL_joystick.h", "SDL_haptic.h"}:
             continue
         info(f"🔨  Generate {header.filename}")
